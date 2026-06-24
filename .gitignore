@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.vscode/
+.idea/
+
+# Data and temp directories
+input/
+input_old/
+tmp/
+workspace/draft_labels/
+workspace/draft_visualized/
+workspace/labels_tmp/
+workspace/dataset/
+workspace/runs/
