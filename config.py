@@ -9,13 +9,9 @@ DATASET_DIR = WORK_DIR / "dataset"
 RUNS_DIR = WORK_DIR / "runs"
 
 CLASS_NAME = "None"
-AUTO_LABEL_MODEL = "yolov8n.pt"
-PRETRAINED_MODEL = "yolov8n.pt"
 MODEL_NAME = "hanging_product_yolo"
 
 RESET_WORK_DIR = False
-AUTO_CREATE_DRAFT_LABELS = False
-REVIEW_LABELS = True
 PREPARE_DATASET = False
 AUGMENT_DATASET = True
 TRAIN_MODEL = False

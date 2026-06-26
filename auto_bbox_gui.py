@@ -1,18 +1,14 @@
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
 
 from PIL import Image, ImageTk
 
-from DBConnection_mariadb import *
-from auto_bbox_utils import (
-    debug_info,
-    debug_item,
-    debug_warn,
-    read_yolo_labels,
-    xyxy_to_yolo,
-    yolo_to_xyxy,
-)
+from auto_bbox_utils import *
+import auto_bbox_mode  as mode
+from ui_theme import apply, paint, BG
 from config import *
 
 # App setup / UI
@@ -23,8 +19,7 @@ class BBoxReviewApp:
     MAX_ZOOM_FACTOR = 4.0
     ZOOM_STEP = 1.15
     CLASSES_TXT = WORK_DIR / "classes.txt"
-    CLASS_TABLE = "db_class_info"
-    BBOX_TABLE = "db_bbox_data"
+    VISUALIZED_DIR = DRAFT_VIS_DIR
     DEFAULT_CLASS = "None"
     
     # App setup / UI
@@ -33,10 +28,9 @@ class BBoxReviewApp:
         root,
         image_files,
         label_dir,
-        class_id=0,
+        class_id=-1,
         max_canvas_w=1200,
         max_canvas_h=780,
-        auto_label_callback=None,
     ):
         self.root = root
         self.image_files = list(image_files)
@@ -44,7 +38,6 @@ class BBoxReviewApp:
         self.class_id = class_id
         self.max_canvas_w = max_canvas_w
         self.max_canvas_h = max_canvas_h
-        self.auto_label_callback = auto_label_callback
 
         self.image_idx = 0
         self.image_path = None
@@ -65,121 +58,123 @@ class BBoxReviewApp:
         self.image_dir_var = tk.StringVar(value=self.get_current_image_dir())
         self.resize_after_id = None
         self.class_popup = None
+        self.auto_model_classes = None
+        
+        self.auto_label_model_path = Path(r"D:/KCH/workspace/tool_bbox_creator/yolov8n.pt")
 
         self.root.title("BBOX Creator")
-        self.root.geometry(f"1300x700+{self.root.winfo_screenwidth()//2 - 650}+{self.root.winfo_screenheight()//2 - 350}")
+        width = 1400
+        height = 800
+        self.root.geometry(
+            f"{width}x{height}+"
+            f"{self.root.winfo_screenwidth() // 2 - width // 2}+"
+            f"{self.root.winfo_screenheight() // 2 - height // 2}"
+        )
+        
         self.build_ui()
+        apply(self.root)
+        paint(self.root)
         self.bind_events()
         self.load_current_image()
 
     def build_ui(self):
-        top = tk.Frame(self.root)
+        # HEADER 
+        top = ttk.Frame(self.root)
         top.pack(side=tk.TOP, fill=tk.X)
 
         self.status_var = tk.StringVar()
-        tk.Button(top, text="Prev", command=self.prev_image).pack(side=tk.LEFT, padx=3, pady=3)
-        tk.Button(top, text="Next", command=self.next_image).pack(side=tk.LEFT, padx=3, pady=3)
-        tk.Button(top, text="Save", command=self.save_current_labels).pack(side=tk.LEFT, padx=3, pady=3)
-        tk.Button(top, text="Auto Label", command=self.auto_label_images).pack(side=tk.LEFT, padx=3, pady=3)
-        tk.Label(top, textvariable=self.status_var, anchor="w").pack(side=tk.LEFT, padx=12)
+        ttk.Button(top, text="Prev", command=self.prev_image).pack(side=tk.LEFT, padx=3, pady=3)
+        ttk.Button(top, text="Next", command=self.next_image).pack(side=tk.LEFT, padx=3, pady=3)
+        ttk.Button(top, text="Save", command=self.save_current_labels).pack(side=tk.LEFT, padx=3, pady=3)
+        ttk.Label(top, textvariable=self.status_var, anchor="w").pack(side=tk.LEFT, padx=12)
 
-        body = tk.PanedWindow(
-            self.root,
-            orient=tk.HORIZONTAL,
-            sashrelief=tk.RAISED,
-            sashwidth=6,
-            showhandle=True,
-        )
+        # BODY
+        body = tk.PanedWindow(self.root, bg=BG, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=6, showhandle=True)
+
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        left = tk.Frame(body, width=300)
-        body.add(left, minsize=240, stretch="never")
+        # BODY - LEFT
+        left = ttk.Frame(body, width=500)
+        body.add(left, minsize=350, stretch="never")
 
-        self.canvas_frame = tk.Frame(body)
-        self.canvas = tk.Canvas(self.canvas_frame, bg="black", cursor="crosshair")
+        self.canvas_frame = ttk.Frame(body)
+        self.canvas = tk.Canvas(self.canvas_frame, cursor="crosshair")
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         body.add(self.canvas_frame, minsize=400, stretch="always")
 
-        side = tk.Frame(body, width=420)
-        body.add(side, minsize=320, stretch="never")
+        side = ttk.Frame(body, width=360)
+        body.add(side, minsize=280, stretch="never")
 
-        tk.Label(left, text="File & Filter", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 2))
-        open_frame = tk.Frame(left)
+        # BODY - LEFT - OPEN DIRECTORY
+        ttk.Label(left, text="File & Filter", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 2))
+        open_frame = ttk.Frame(left)
         open_frame.pack(side=tk.TOP, fill=tk.X, padx=6)
-        tk.Button(open_frame, text="Folder Open", command=self.browse_image_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(open_frame, text="Single File Open", command=self.open_single_file).pack(
-            side=tk.LEFT,
-            fill=tk.X,
-            expand=True,
-            padx=(4, 0),
-        )
+        ttk.Button(open_frame, text="Folder Open", command=self.browse_image_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(open_frame, text="Single File Open", command=self.open_single_file).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0),)
 
-        tk.Label(left, text="Directory", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 2))
-        dir_frame = tk.Frame(left)
+        ttk.Label(left, text="Directory", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(6, 2))
+        dir_frame = ttk.Frame(left)
         dir_frame.pack(side=tk.TOP, fill=tk.X, padx=6)
-        tk.Entry(dir_frame, textvariable=self.image_dir_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(dir_frame, text="Browse", command=self.browse_image_dir).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(left, text="Load Directory", command=self.load_image_dir_from_entry).pack(
-            side=tk.TOP,
-            padx=6,
-            pady=(4, 6),
-        )
-
-        tk.Label(left, text="Images", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 2))
-        image_list_frame = tk.Frame(left)
+        ttk.Entry(dir_frame, textvariable=self.image_dir_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(dir_frame, text="Browse", command=self.browse_image_dir).pack(side=tk.LEFT, padx=(4, 0))
+        
+        
+        # BODY - LEFT - AUTO LABEL MODEL
+        model_frame = ttk.Frame(left)
+        model_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)
+        self.model_status_var = tk.StringVar(value=f"Auto-Label Model: {self.auto_label_model_path.name}")
+        ttk.Label(model_frame, textvariable=self.model_status_var).pack(side=tk.LEFT)
+        ttk.Button(model_frame, text="Change Model", command=self.select_auto_label_model).pack(side=tk.RIGHT, padx=2, pady=(0, 4))
+        
+        # BODY - LEFT - IMAGE LIST
+        image_list_header_frame = ttk.Frame(left)
+        image_list_header_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 2))
+        ttk.Label(image_list_header_frame, text="Images", anchor="w").pack(side=tk.LEFT, fill=tk.X, padx=6, pady=(2, 2))
+        ttk.Button(image_list_header_frame, text="Auto Label All Images", command=self.auto_label).pack(side=tk.RIGHT, padx=0, pady=(2, 0))
+        image_list_frame = ttk.Frame(left)
         image_list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6)
-        self.image_listbox = tk.Listbox(image_list_frame, exportselection=False, height=12)
-        image_scroll = tk.Scrollbar(image_list_frame, orient=tk.VERTICAL, command=self.image_listbox.yview)
+        self.image_listbox = tk.Listbox(image_list_frame, borderwidth=0, exportselection=False, height=12)
+        image_scroll = ttk.Scrollbar(image_list_frame, orient=tk.VERTICAL, command=self.image_listbox.yview)
         self.image_listbox.config(yscrollcommand=image_scroll.set)
         self.image_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         image_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        tk.Label(side, text="Boxes", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6, pady=(8, 2))
-        box_list_frame = tk.Frame(side)
+        # BODY - RIGHT - BOX LIST
+        box_list_header_frame = ttk.Frame(side)
+        box_list_header_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 2))
+        ttk.Label(box_list_header_frame, text="Boxes", anchor="w").pack(side=tk.LEFT, fill=tk.X, padx=6, pady=(8, 2))
+        ttk.Button(box_list_header_frame, text="Delete Box", command=self.delete_selected_box).pack(side=tk.RIGHT, padx=(3, 17))
+        
+        box_list_frame = ttk.Frame(side)
         box_list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6)
         columns = ("seq", "class", "x1", "y1", "x2", "y2", "w", "h")
         self.box_table = ttk.Treeview(box_list_frame, columns=columns, show="headings", height=10)
         for column in columns:
             self.box_table.heading(column, text=column)
-        self.box_table.column("seq", width=55, anchor=tk.CENTER)
-        self.box_table.column("class", width=110, anchor=tk.W)
+        self.box_table.column("seq", width=45, anchor=tk.CENTER)
+        self.box_table.column("class", width=90, anchor=tk.W)
         for column in ("x1", "y1", "x2", "y2", "w", "h"):
-            self.box_table.column(column, width=45, anchor=tk.E)
-        box_scroll = tk.Scrollbar(box_list_frame, orient=tk.VERTICAL, command=self.box_table.yview)
+            self.box_table.column(column, width=40, anchor=tk.E)
+        box_scroll = ttk.Scrollbar(box_list_frame, orient=tk.VERTICAL, command=self.box_table.yview)
         self.box_table.config(yscrollcommand=box_scroll.set)
         self.box_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         box_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        class_frame = tk.LabelFrame(side, text="Class Select")
+        # BODY - RIGHT - CLASS LIST
+        class_frame = ttk.LabelFrame(side, text="Class Select")
         class_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6, pady=8)
-        class_list_frame = tk.Frame(class_frame)
+        class_list_frame = ttk.Frame(class_frame)
         class_list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=(4, 0))
-        self.class_listbox = tk.Listbox(class_list_frame, exportselection=False, height=7)
-        class_scroll = tk.Scrollbar(class_list_frame, orient=tk.VERTICAL, command=self.class_listbox.yview)
+        
+        self.class_listbox = tk.Listbox(class_list_frame, borderwidth=0, exportselection=False, height=7)
+        class_scroll = ttk.Scrollbar(class_list_frame, orient=tk.VERTICAL, command=self.class_listbox.yview)
         self.class_listbox.config(yscrollcommand=class_scroll.set)
         self.class_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         class_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        selected_class_frame = tk.Frame(class_frame)
-        selected_class_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)
-        self.class_combo = ttk.Combobox(
-            selected_class_frame,
-            textvariable=self.selected_class_var,
-            values=self.class_names,
-        )
-        self.class_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4, pady=4)
-        tk.Button(selected_class_frame, text="Apply Class", command=self.apply_selected_class).pack(side=tk.LEFT, padx=4, pady=4)
-        tk.Button(class_frame, text="Class Manage", command=self.open_class_manager).pack(
-            side=tk.TOP,
-            anchor=tk.E,
-            padx=8,
-            pady=(0, 6),
-        )
-
-        action_frame = tk.Frame(side)
-        action_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 6))
-        tk.Button(action_frame, text="Delete Box", command=self.delete_selected_box).pack(side=tk.LEFT, padx=(3, 0))
-
+        
+        button_frame = ttk.Frame(class_frame)
+        button_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)       
+        ttk.Button(button_frame, text="Class Manage", command=self.open_class_manager).pack(side=tk.RIGHT, anchor=tk.E, padx=4, pady=(0, 6,))
         self.refresh_image_list()
         self.refresh_class_list()
 
@@ -194,6 +189,9 @@ class BBoxReviewApp:
         self.canvas.bind("<B1-Motion>", self.on_mouse_move)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
+        self.canvas.bind("<B3-Motion>", self.on_canvas_right_drag)
+        self.canvas.bind("<ButtonRelease-3>", self.on_canvas_right_release)
+
         self.image_listbox.bind("<<ListboxSelect>>", self.on_image_list_select)
         self.box_table.bind("<<TreeviewSelect>>", self.on_box_list_select)
         if self.class_listbox is not None:
@@ -202,9 +200,20 @@ class BBoxReviewApp:
         self.canvas.config(takefocus=1)
         self.root.bind("<Delete>", lambda event: self.delete_selected_box()) # 딜리트 안 먹어서 아래의 버튼으로 사용
         self.root.bind("<Control-s>", lambda event: self.save_current_labels())
+        self.root.bind("<F5>", lambda event: self.refresh_all())
         self.root.bind("<Left>", lambda event: self.prev_image())
         self.root.bind("<Right>", lambda event: self.next_image())
-        
+    # 
+    def refresh_all(self):
+        """Refresh the image list, box list, and class list."""
+        self.refresh_image_list()
+        self.refresh_box_list()
+        self.refresh_class_list()
+
+        # 현재 이미지가 있으면 화면도 다시 갱신
+        if self.image_path is not None:
+            self.load_current_image()    
+
     # Image file selection
     def get_current_image_dir(self):
         if not self.image_files:
@@ -397,7 +406,7 @@ class BBoxReviewApp:
 
         for idx, box in enumerate(self.boxes):
             x1, y1, x2, y2 = self.normalize_box(box)
-            class_name = self.box_classes[idx] if idx < len(self.box_classes) else "hanging_product"
+            class_name = self.box_classes[idx] if idx < len(self.box_classes) else "Unknown"
             self.box_table.insert(
                 "",
                 tk.END,
@@ -461,17 +470,7 @@ class BBoxReviewApp:
 
     # Class names / selection
     def load_class_names(self):
-        if not self.CLASSES_TXT.exists():
-            debug_warn(f"Classes file not found: {self.CLASSES_TXT}")
-            return []
-
-        class_names = [
-            line.strip()
-            for line in self.CLASSES_TXT.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        debug_info(f"Loaded classes: {self.CLASSES_TXT} classes={len(class_names)}")
-        return class_names
+        return mode.load_class_names(self.CLASSES_TXT)
 
     def default_class_name(self):
         current = self.selected_class_var.get().strip()
@@ -479,7 +478,7 @@ class BBoxReviewApp:
             return current
         if self.class_names:
             return self.class_names[0]
-        return "hanging_product"
+        return "Unknown"
 
     def class_name_from_label(self, line):
         parts = line.split()
@@ -515,7 +514,7 @@ class BBoxReviewApp:
         while len(self.box_classes) < len(self.boxes):
             self.box_classes.append(self.default_class_name())
 
-        self.box_classes[self.selected_idx] = self.selected_class_var.get().strip() or "hanging_product"
+        self.box_classes[self.selected_idx] = self.selected_class_var.get().strip() or "Unknown"
         debug_item(f"Applied class: box={self.selected_idx + 1}, class={self.box_classes[self.selected_idx]}")
         self.refresh_box_list()
         self.update_status()
@@ -526,7 +525,7 @@ class BBoxReviewApp:
         self.selected_class_var.set(class_name)
         self.apply_selected_class()
 
-    def show_class_menu(self, root_x, root_y):
+    def show_class_menu(self, root_x, root_y):        
         if self.selected_idx is None or not self.class_names:
             return
 
@@ -535,100 +534,99 @@ class BBoxReviewApp:
 
         popup = tk.Toplevel(self.root)
         self.class_popup = popup
-        popup.overrideredirect(True)
-        popup.transient(self.root)
+        # popup.transient(self.root)
+        popup.attributes("-topmost", True)
         popup.geometry(f"220x{min(10, len(self.class_names)) * 24 + 8}+{root_x}+{root_y}")
+        
+        search_var = tk.StringVar()
 
-        list_frame = tk.Frame(popup, bd=1, relief=tk.SOLID)
-        list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        class_list = tk.Listbox(list_frame, exportselection=False, height=min(10, len(self.class_names)))
-        class_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=class_list.yview)
-        class_list.config(yscrollcommand=class_scroll.set)
-        class_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        if len(self.class_names) > 10:
-            class_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        search_entry = ttk.Entry(popup, textvariable=search_var)
+        search_entry.pack(fill=tk.X, padx=5, pady=5)
 
-        for class_name in self.class_names:
-            class_list.insert(tk.END, class_name)
+        frame = ttk.Frame(popup)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        listbox = tk.Listbox(frame, 
+                             bg = "#343A40",
+                            fg = "#FFFFFF",
+                            selectbackground = "#0E639C",
+                            selectforeground = "#FFFFFF",
+                            yscrollcommand=scrollbar.set)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar.config(command=listbox.yview)
+
+        def update_list(*args):
+            keyword = search_var.get().lower()
+
+            listbox.delete(0, tk.END)
+
+            for cls in self.class_names:
+                if keyword in cls.lower():
+                    listbox.insert(tk.END, cls)
 
         def choose_class(event=None):
-            selection = class_list.curselection()
+            selection = listbox.curselection()
+
             if not selection:
                 return
-            self.set_box_class(class_list.get(selection[0]))
+
+            cls = listbox.get(selection[0])
+            self.set_box_class(cls)
             popup.destroy()
 
-        class_list.bind("<ButtonRelease-1>", choose_class)
-        class_list.bind("<Return>", choose_class)
-        popup.bind("<Escape>", lambda event: popup.destroy())
-        popup.bind("<FocusOut>", lambda event: popup.destroy())
-        popup.focus_set()
+        search_var.trace_add("write", update_list)
+
+        listbox.bind("<Double-Button-1>", choose_class)
+        listbox.bind("<Return>", choose_class)
+
+        popup.bind("<Escape>", lambda e: popup.destroy())
+        update_list()
+        search_entry.focus_set()
 
     def on_canvas_right_click(self, event):
         idx, mode = self.hit_test(event.x, event.y)
-        if idx is None:
+        if idx is not None:
+            self.selected_idx = idx
+            self.drag_mode = None
+            self.drag_start = None
+            self.original_box = None
+            self.draw_boxes()
+            self.refresh_box_list()
+            self.update_status()
+            self.show_class_menu(event.x_root, event.y_root)
+            self.right_dragging = False
             return
-        self.selected_idx = idx
-        self.drag_mode = None
-        self.drag_start = None
-        self.original_box = None
-        self.draw_boxes()
-        self.refresh_box_list()
-        self.update_status()
-        self.show_class_menu(event.x_root, event.y_root)
+        # 2) 빈 공간 → pan 시작
+        self.right_dragging = True
+        self.canvas.scan_mark(event.x, event.y)
+
+    def on_canvas_right_drag(self, event):
+        if self.right_dragging:
+            self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def on_canvas_right_release(self, event):
+        self.right_dragging = False
 
     def save_class_names(self):
-        self.CLASSES_TXT.parent.mkdir(parents=True, exist_ok=True)
-        text = "\n".join(self.class_names)
-        if text:
-            text += "\n"
-        self.CLASSES_TXT.write_text(text, encoding="utf-8")
-        self.class_combo.config(values=self.class_names)
+        mode.save_class_names(self.CLASSES_TXT, self.class_names)
         self.refresh_class_list()
-
+           
     def sync_class_text_from_db(self):
-        rows = select(
-            self.CLASS_TABLE,
-            columns="CLASS_NAME",
-            where="USE_YN = %s",
-            params=("Y",),
-            extra="ORDER BY CLASS_ID",
-        )
-        if rows is None:
+        class_names = mode.sync_classes_from_db(self.CLASSES_TXT)
+        if class_names is None:
             messagebox.showerror("DB Error", "Failed to load classes from db_class_info.")
             return False
-
-        self.class_names = [row[0] for row in rows]
-        self.save_class_names()
+        self.class_names = class_names
+        self.refresh_class_list()
         return True
-
+    
     def refresh_classes_from_text(self):
         self.class_names = self.load_class_names()
-        self.class_combo.config(values=self.class_names)
         self.refresh_class_list()
-
-    def auto_label_images(self):
-        if self.auto_label_callback is None:
-            messagebox.showwarning("Auto Label", "Auto labeling callback is not configured.")
-            return
-
-        ok = messagebox.askyesno(
-            "Auto Label",
-            "Auto labeling will recreate draft labels for the current image list. Continue?",
-        )
-        if not ok:
-            return
-
-        self.save_current_labels()
-        self.root.config(cursor="watch")
-        self.root.update_idletasks()
-        try:
-            self.auto_label_callback(self.image_files, self.label_dir)
-        finally:
-            self.root.config(cursor="")
-
-        self.load_current_image()
-        messagebox.showinfo("Auto Label", "Auto labeling is complete.")
 
     # DB class management
     def find_db_class(self, class_name, use_yn=None):
@@ -651,56 +649,39 @@ class BBoxReviewApp:
         return rows[0]
 
     def add_db_class(self, class_name):
-        existing = self.find_db_class(class_name)
-        if existing:
-            class_id, _, use_yn = existing
-            if use_yn == "Y":
-                messagebox.showwarning("Class exists", "Already active class name.")
-                return False
-            update(self.CLASS_TABLE, {"USE_YN": "Y"}, "CLASS_ID = %s", (class_id,))
-        else:
-            insert(
-                self.CLASS_TABLE,
-                {
-                    "CLASS_NAME": class_name,
-                    "USE_YN": "Y",
-                    "REMARK": None,
-                },
-            )
-        return self.sync_class_text_from_db()
-
+        status, class_names = mode.add_class(class_name, self.CLASSES_TXT)
+        if status == "exists":
+            messagebox.showwarning("Class exists", "Already active class name.")
+            return False
+        self.class_names = class_names
+        self.refresh_class_list()
+        return True
+    
     def rename_db_class(self, old_name, new_name):
-        if old_name == new_name:
+        status, class_names = mode.rename_class(old_name, new_name, self.CLASSES_TXT)
+        if status == "same":
             return True
-        if self.find_db_class(new_name):
+        if status == "name_taken":
             messagebox.showwarning("Class exists", "Already existing class name.")
             return False
-
-        row = self.find_db_class(old_name, "Y")
-        if not row:
+        if status == "not_found":
             messagebox.showwarning("Class missing", "Selected class is not active in DB.")
             return False
-
-        class_id = row[0]
-        update(self.CLASS_TABLE, {"CLASS_NAME": new_name}, "CLASS_ID = %s", (class_id,))
-        if self.sync_class_text_from_db():
-            self.box_classes = [new_name if value == old_name else value for value in self.box_classes]
-            return True
-        return False
+        self.class_names = class_names
+        self.refresh_class_list()
+        self.box_classes = [new_name if v == old_name else v for v in self.box_classes]
+        return True
 
     def hide_db_class(self, class_name):
-        row = self.find_db_class(class_name, "Y")
-        if not row:
+        status, class_names = mode.hide_class(class_name, self.CLASSES_TXT)
+        if status == "not_found":
             messagebox.showwarning("Class missing", "Selected class is not active in DB.")
             return False
-
-        class_id = row[0]
-        update(self.CLASS_TABLE, {"USE_YN": "N"}, "CLASS_ID = %s", (class_id,))
-        if self.sync_class_text_from_db():
-            fallback = self.class_names[0] if self.class_names else "hanging_product"
-            self.box_classes = [fallback if value == class_name else value for value in self.box_classes]
-            return True
-        return False
+        self.class_names = class_names
+        self.refresh_class_list()
+        fallback = self.class_names[0] if self.class_names else "Unknown"
+        self.box_classes = [fallback if v == class_name else v for v in self.box_classes]
+        return True
 
     def open_class_manager(self):
         self.refresh_classes_from_text()
@@ -716,18 +697,18 @@ class BBoxReviewApp:
         dialog.lift()
         dialog.bind("<Escape>", lambda e: dialog.destroy())
 
-        list_frame = tk.Frame(dialog)
+        list_frame = ttk.Frame(dialog)
         list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8, pady=8)
-        class_list = tk.Listbox(list_frame, exportselection=False)
-        class_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=class_list.yview)
+        class_list = tk.Listbox(list_frame, borderwidth=0, exportselection=False)
+        class_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=class_list.yview)
         class_list.config(yscrollcommand=class_scroll.set)
         class_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         class_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        edit_frame = tk.Frame(dialog)
+        edit_frame = ttk.Frame(dialog)
         edit_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=8, pady=8)
         name_var = tk.StringVar()
-        tk.Entry(edit_frame, textvariable=name_var).pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
+        ttk.Entry(edit_frame, textvariable=name_var).pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
 
         def reload_dialog_list():
             class_list.delete(0, tk.END)
@@ -775,17 +756,16 @@ class BBoxReviewApp:
                 self.draw_boxes()
 
         class_list.bind("<<ListboxSelect>>", select_dialog_class)
-        tk.Button(edit_frame, text="Add", command=add_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
-        tk.Button(edit_frame, text="Rename", command=rename_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
-        tk.Button(edit_frame, text="Delete(Hide)", command=hide_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
-        tk.Button(edit_frame, text="Close", command=dialog.destroy).pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+        ttk.Button(edit_frame, text="Add", command=add_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
+        ttk.Button(edit_frame, text="Rename", command=rename_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
+        ttk.Button(edit_frame, text="Delete(Hide)", command=hide_dialog_class).pack(side=tk.TOP, fill=tk.X, pady=2)
+        ttk.Button(edit_frame, text="Close", command=dialog.destroy).pack(side=tk.BOTTOM, fill=tk.X, pady=2)
         reload_dialog_list()
 
     def db_class_id_from_name(self, class_name):
-        row = self.find_db_class(class_name, "Y")
-        if row:
-            return row[0]
-
+        class_id = mode.get_db_class_id(class_name)
+        if class_id is not None:
+            return class_id
         debug_warn(f"Class not found in DB: {class_name}")
         return self.class_id_from_name(class_name)
 
@@ -793,6 +773,22 @@ class BBoxReviewApp:
     def on_canvas_motion(self, event):
         self.draw_pointer_guides(event.x, event.y)
         self.update_canvas_cursor(event.x, event.y)
+        if self.original_img is None:
+            return
+
+        x = self.canvas.canvasx(event.x) / self.scale
+        y = self.canvas.canvasy(event.y) / self.scale
+        over_box = False
+
+        for (x1, y1, x2, y2) in self.boxes:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                over_box = True
+                break
+
+        if over_box:
+            self.canvas.config(cursor="fleur")
+        else:
+            self.canvas.config(cursor="")
 
     def clear_pointer_guides(self, event=None):
         self.canvas.delete("guide")
@@ -890,7 +886,7 @@ class BBoxReviewApp:
 
         if mode == "create":
             self.boxes.append([ix, iy, ix, iy])
-            self.box_classes.append("hanging_product")
+            self.box_classes.append("Unknown")
             self.selected_idx = len(self.boxes) - 1
             self.original_box = list(self.boxes[self.selected_idx])
             debug_item(f"Start new box: ({ix}, {iy})")
@@ -979,7 +975,7 @@ class BBoxReviewApp:
     def save_current_labels(self):
         if self.original_img is None or self.image_path is None:
             return
-
+        class_name = None
         self.label_dir.mkdir(parents=True, exist_ok=True)
         label_path = self.label_dir / f"{self.image_path.stem}.txt"
         img_w, img_h = self.original_img.size
@@ -992,39 +988,82 @@ class BBoxReviewApp:
                 class_id = self.class_id_from_name(class_name)
                 x, y, w, h = xyxy_to_yolo(x1, y1, x2, y2, img_w, img_h)
                 f.write(f"{class_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
-        debug_info(f"Saved reviewed labels: {label_path}")
-        self.save_current_bboxes_to_db(boxes)
-
+        debug_info(f"Saved reviewed labels: {label_path}")      
+        self.save_current_bboxes_to_db(self.image_path, class_name, boxes)
+        self.save_boxed_image(str(self.VISUALIZED_DIR / f"{self.image_path.stem}_draft_boxed{self.image_path.suffix}"), self.image_path, boxes)
         self.refresh_image_list()
-        self.root.update_idletasks()
+        self.root.update_idletasks()    
 
-    def save_current_bboxes_to_db(self, boxes):
-        image_id = self.image_path.name
-        if not delete(self.BBOX_TABLE, "IMAGE_ID = %s", (image_id,)):
-            debug_warn(f"Failed to clear bbox rows: image_id={image_id}")
+    def save_boxed_image(self, save_path, image_path, boxes):        
+        mode.save_boxed_image(save_path, image_path, boxes)
+
+    def select_auto_label_model(self):
+        confirm = messagebox.askyesno(
+        "Class Synchronization",
+        "Model classes will be synchronized with the database.\nContinue?"
+    )
+        if not confirm: return
+
+        model_path = filedialog.askopenfilename(
+            title="Select Auto Label Model",
+            filetypes=[
+                ("YOLO Model", "*.pt"),
+                ("All Files", "*.*")
+            ]
+        )
+        if not model_path: return
+
+        if Path(model_path).suffix.lower() != ".pt":
+            messagebox.showerror("Invalid Model", "Only YOLO model files (.pt) can be selected.")
             return
 
-        bbox_seq = 1
-        for idx, (x1, y1, x2, y2) in enumerate(boxes):
-            if abs(x2 - x1) < 2 or abs(y2 - y1) < 2:
-                continue
-
-            class_name = self.box_classes[idx] if idx < len(self.box_classes) else self.default_class_name()
-            insert(
-                self.BBOX_TABLE,
-                {
-                    "IMAGE_ID": image_id,
-                    "BBOX_SEQ": bbox_seq,
-                    "CLASS_ID": self.db_class_id_from_name(class_name),
-                    "X_MIN": x1,
-                    "Y_MIN": y1,
-                    "X_MAX": x2,
-                    "Y_MAX": y2,
-                },
+        status, model_class_names, class_names = mode.setup_auto_label_model(model_path, self.CLASSES_TXT)
+        if status == "invalid_model":
+            messagebox.showerror(
+                "Invalid Model",
+                "The selected file is not a valid YOLO model.\nThe current model will be kept."
             )
-            bbox_seq += 1
+            return
+        if status == "db_error":
+            messagebox.showerror("DB Error", "Failed to sync classes with db_class_info.")
+            return
 
-        debug_info(f"Saved bbox rows to DB: image_id={image_id} boxes={bbox_seq - 1}")
+        self.auto_model_classes = model_class_names
+        self.class_names = class_names
+        self.refresh_class_list()
+
+        self.auto_label_model_path = model_path
+        model_name = Path(model_path).name
+        self.model_status_var.set(f"Auto-Label Model: {model_name}")
+        return
+    
+    def auto_label(self):
+        ok = messagebox.askyesno(
+        "Auto Label",
+        "Auto labeling will recreate draft labels for the current image list. Continue?",
+        )
+        if not ok:
+            return
+        
+        results = mode.auto_label_images(self.get_current_image_dir(), self.auto_label_model_path)
+        if not results:
+            messagebox.showerror(
+                "Auto Label",
+                "No objects were detected in the selected images.\nThere is nothing to label."
+            )
+            return
+
+        for item in results:
+            model_cls_id = item["class_id"]
+            class_name = self.auto_model_classes[model_cls_id]
+            save_yolo_label(self.label_dir / f"{item['image_path'].stem}.txt", item["yolo_boxes"])
+            self.save_current_bboxes_to_db(item["image_path"], class_name, item["boxes"])
+            self.refresh_all()          
+        messagebox.showinfo("Auto Label", "Auto labeling is complete.")
+   
+    def save_current_bboxes_to_db(self, image_path, class_name, boxes):
+        class_id = self.db_class_id_from_name(class_name)
+        mode.save_bboxes_to_db(image_path, class_id, boxes)
 
     def prev_image(self):
         self.save_current_labels()
@@ -1040,11 +1079,11 @@ class BBoxReviewApp:
         else:
             messagebox.showinfo("Review complete", "Last image reviewed.")
 
-def open_gui(image_files, label_dir, auto_label_callback=None):
+def open_gui(label_dir):
     """Open a GUI to adjust bbox labels and save edited YOLO txt files."""
+    image_files = mode.load_imgs(TOOL_DIR / "input")
     if not image_files:
-        debug_warn("No images to open in review GUI.")
-        return
+        messagebox.showinfo("BBox Creator", "No images to open in review GUI.")
 
     label_dir = Path(label_dir)
     label_dir.mkdir(parents=True, exist_ok=True)
@@ -1055,6 +1094,6 @@ def open_gui(image_files, label_dir, auto_label_callback=None):
     debug_item("Drag yellow corners to resize it.")
     debug_item("Ctrl+S saves, Delete removes selected box, Left/Right changes image.")
 
-    root = tk.Tk()
-    BBoxReviewApp(root, image_files=image_files, label_dir=label_dir, auto_label_callback=auto_label_callback)
+    root = ttk.Window(themename="darkly")
+    BBoxReviewApp(root, image_files=image_files, label_dir=label_dir)
     root.mainloop()

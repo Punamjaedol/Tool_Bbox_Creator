@@ -6,12 +6,16 @@ __pycache__/
 .vscode/
 .idea/
 
+# YOLO model
+*.pt
+
 # Data and temp directories
 input/
 input_old/
 tmp/
 workspace/draft_labels/
 workspace/draft_visualized/
+workspace/draft_labels_old/
 workspace/labels_tmp/
 workspace/dataset/
 workspace/runs/

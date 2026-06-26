@@ -1,12 +1,3 @@
-"""
-auto_bbox_mode.py
-
-Build a YOLO detection model for hanging conveyor products.
-
-Target object:
-- Use one class only: hanging_product
-"""
-
 import random
 import shutil
 from pathlib import Path
@@ -15,32 +6,9 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from auto_bbox_gui import open_gui
-from auto_bbox_utils import (
-    debug_info,
-    debug_item,
-    debug_warn,
-    read_yolo_labels,
-    save_yolo_label,
-    xyxy_to_yolo,
-)
+from auto_bbox_utils import *
+import auto_bbox_db as db
 from config import *
-
-
-def load_model(model_path=None):
-    """Load a YOLO detection model."""
-    debug_info(f"Initializing YOLO model: {model_path}")
-
-    try:
-        if not model_path:
-            model_path = "yolov8n.pt"
-        model = YOLO(model_path)
-        debug_info(f"Loaded YOLO model: {model_path}")
-        return model
-    except Exception as e:
-        debug_warn(f"Error loading {model_path}: {e}")
-        return None
-
 
 def load_imgs(input_dir, ):
     """Load source images that match the target conveyor screenshot pattern."""
@@ -55,7 +23,6 @@ def load_imgs(input_dir, ):
     else: debug_info(f"Found {len(image_files)} target images.")
     print()
     return image_files
-
 
 def create_yolo_dirs(dataset_dir):
     """Create YOLO train/val folder structure."""
@@ -72,70 +39,6 @@ def create_yolo_dirs(dataset_dir):
         debug_info(f"Prepared directory: {path}")
 
     return dirs
-
-
-def auto_create_labels(model, image_files, label_dir, visualized_dir, conf=0.05, imgsz=640):
-    """
-    Create first-pass labels with a pretrained model.
-
-    Important:
-    - These labels are only a draft.
-    - Manually delete wrong boxes and fix missing product boxes before training.
-    """
-    if model is None:
-        debug_warn("Model is not loaded. Auto-label step skipped.")
-        return
-
-    label_dir = Path(label_dir)
-    visualized_dir = Path(visualized_dir)
-    label_dir.mkdir(parents=True, exist_ok=True)
-    visualized_dir.mkdir(parents=True, exist_ok=True)
-
-    debug_info("Starting first-pass auto labeling.")
-
-    for img_path in image_files:
-        debug_info(f"Processing image: {img_path}")
-        img = cv2.imread(str(img_path))
-        if img is None:
-            debug_warn(f"Failed to read image: {img_path}")
-            continue
-
-        img_h, img_w = img.shape[:2]
-        boxed_img = img.copy()
-        yolo_boxes = []
-
-        results = model.predict(
-            source=img_path,
-            conf=conf,
-            imgsz=imgsz,
-            agnostic_nms=True,
-            verbose=False,
-        )
-        debug_info("Model inference completed.")
-
-        for r_idx, result in enumerate(results):
-            if not hasattr(result, "boxes") or result.boxes is None:
-                debug_warn(f"No boxes found in result index {r_idx}")
-                continue
-
-            debug_info(f"Processing result index {r_idx}, boxes: {len(result.boxes)}")
-            for b_idx, box in enumerate(result.boxes):
-                score = float(box.conf[0].item())
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-
-                x1 = max(0, min(img_w - 1, int(round(x1))))
-                y1 = max(0, min(img_h - 1, int(round(y1))))
-                x2 = max(0, min(img_w - 1, int(round(x2))))
-                y2 = max(0, min(img_h - 1, int(round(y2))))
-
-                debug_item(f"Box {b_idx}: ({x1}, {y1}, {x2}, {y2}) conf={score:.4f}")
-                yolo_boxes.append(xyxy_to_yolo(x1, y1, x2, y2, img_w, img_h))
-                cv2.rectangle(boxed_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
-
-        save_yolo_label(label_dir / f"{img_path.stem}.txt", yolo_boxes)
-        cv2.imwrite(str(visualized_dir / f"{img_path.stem}_draft_boxed{img_path.suffix}"), boxed_img)
-        debug_info(f"Total boxes detected: {len(yolo_boxes)}")
-
 
 def split_dataset(image_files, draft_label_dir, dataset_dir, val_ratio=0.2, seed=42):
     """Copy images and reviewed labels into YOLO train/val structure."""
@@ -226,7 +129,6 @@ def flip_yolo_labels(label_lines):
         flipped.append(f"{class_id} {flipped_x:.6f} {float(y):.6f} {float(w):.6f} {float(h):.6f}")
     return flipped
 
-
 def write_data_yaml(dataset_dir, class_name="hanging_product"):
     """Write Ultralytics data.yaml."""
     dataset_dir = Path(dataset_dir).resolve()
@@ -246,7 +148,6 @@ def write_data_yaml(dataset_dir, class_name="hanging_product"):
     )
     debug_info(f"Saved dataset yaml: {data_yaml}")
     return data_yaml
-
 
 def train_detection_model(data_yaml, pretrained_model, project_dir, model_name, epochs=80, imgsz=640, batch=4):
     """Train a one-class YOLO detection model."""
@@ -274,76 +175,241 @@ def train_detection_model(data_yaml, pretrained_model, project_dir, model_name, 
     debug_info("Training completed.")
     return results
 
+# --- classes.txt local cache ---
+def load_class_names(classes_txt_path):
+    classes_txt_path = Path(classes_txt_path)
+    if not classes_txt_path.exists():
+        debug_warn(f"Classes file not found: {classes_txt_path}")
+        return []
+    return [
+        line.strip()
+        for line in classes_txt_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
-def build_hanging_product_model():
-    """Prepare data and train a YOLO model"""
+def save_class_names(classes_txt_path, class_names):
+    classes_txt_path = Path(classes_txt_path)
+    classes_txt_path.parent.mkdir(parents=True, exist_ok=True)
+    text = "\n".join(class_names)
+    if text:
+        text += "\n"
+    classes_txt_path.write_text(text, encoding="utf-8")
 
-    debug_info("AUTO BBOX MODE")
-    debug_item(f"work_dir={WORK_DIR}")
-    debug_item(f"class_name={CLASS_NAME}")
+def sync_classes_from_db(classes_txt_path):
+    """Synchronize active classes from the database to classes.txt and return the class name list. Returns None if synchronization fails."""
+    rows = db.get_active_classes()
+    if rows is None:
+        debug_warn("Failed to load classes from db_class_info.")
+        return None
+    class_names = [name for _, name in rows]
+    save_class_names(classes_txt_path, class_names)
+    return class_names
 
-    image_files = load_imgs(TOOL_DIR / "input")
-    if not image_files: return
 
-    if RESET_WORK_DIR:
-        if WORK_DIR.exists():
-            shutil.rmtree(WORK_DIR)
-            debug_info(f"Removed directory: {WORK_DIR}")
-        else:
-            WORK_DIR.mkdir(parents=True, exist_ok=True)
-            debug_info(f"Created directory: {WORK_DIR}")
+# --- Class Add/Rename/Hide ---
+def add_class(class_name, classes_txt_path):
+    """Returns: ("exists", None) | ("ok", class_names)"""
+    existing = db.find_class(class_name)
+    if existing:
+        class_id, _, use_yn = existing
+        if use_yn == "Y":
+            return "exists", None
+        db.set_class_use_yn(class_id, "Y")
     else:
-        WORK_DIR.mkdir(parents=True, exist_ok=True)
-        debug_info(f"Using work directory: {WORK_DIR}")
+        db.insert_class(class_name, use_yn="Y")
+    return "ok", sync_classes_from_db(classes_txt_path)
 
-    if AUTO_CREATE_DRAFT_LABELS:
-        auto_label_model = load_model(AUTO_LABEL_MODEL)
-        auto_create_labels(
+def rename_class(old_name, new_name, classes_txt_path):
+    """Returns: ("same", None) | ("name_taken", None) | ("not_found", None) | ("ok", class_names)"""
+    if old_name == new_name:
+        return "same", None
+    if db.find_class(new_name):
+        return "name_taken", None
+    row = db.find_class(old_name, "Y")
+    if not row:
+        return "not_found", None
+    db.rename_class(row[0], new_name)
+    return "ok", sync_classes_from_db(classes_txt_path)
+
+def hide_class(class_name, classes_txt_path):
+    """Returns: ("not_found", None) | ("ok", class_names)"""
+    row = db.find_class(class_name, "Y")
+    if not row:
+        return "not_found", None
+    db.set_class_use_yn(row[0], "N")
+    return "ok", sync_classes_from_db(classes_txt_path)
+
+def get_db_class_id(class_name):
+    """Return the CLASS_ID of an active class, or None if not found."""
+    row = db.find_class(class_name, "Y")
+    return row[0] if row else None
+
+def sync_model_classes_to_db(model_class_names, classes_txt_path):
+    """Add missing auto-label model classes to the database and synchronize the class list."""
+    existing = db.get_active_classes()
+    existing_names = {name for _, name in existing} if existing else set()
+    for class_name in model_class_names:
+        if class_name not in existing_names:
+            db.insert_class(class_name, use_yn="Y", remark="Added by Auto Label Model")
+    return sync_classes_from_db(classes_txt_path)
+
+
+# --- Save bbox  ---
+def save_bboxes_to_db(image_path, class_id, boxes):
+    """해당 이미지의 bbox를 전부 지우고 다시 저장."""
+    image_id = Path(image_path).name
+    if not db.clear_bboxes(image_id):
+        debug_warn(f"Failed to clear bbox rows: image_id={image_id}")
+        return False
+
+    bbox_seq = 1
+    for (x1, y1, x2, y2) in boxes:
+        if abs(x2 - x1) < 2 or abs(y2 - y1) < 2:
+            continue
+        db.insert_bbox(image_id, bbox_seq, class_id, x1, y1, x2, y2)
+        bbox_seq += 1
+
+    debug_info(f"Saved bbox rows to DB: image_id={image_id} boxes={bbox_seq - 1}")
+    return True
+
+
+# --- Auto Label Model  ---
+def load_model(model_path=None):
+    """Load a YOLO detection model."""
+    debug_info(f"Initializing YOLO model: {model_path}")
+
+    try:
+        if not model_path:
+            model_path = "yolov8n.pt"
+        model = YOLO(model_path)
+        debug_info(f"Loaded YOLO model: {model_path}")
+        return model
+    except Exception as e:
+        debug_warn(f"Error loading {model_path}: {e}")
+        return None
+
+def get_model_class_names(model):
+    """Extract the class name list from a YOLO model object."""
+    return list(model.names.values())
+
+def setup_auto_label_model(model_path, classes_txt_path):
+    """
+    Load a YOLO model and synchronize its classes with the database.
+
+    Returns:
+        ("invalid_model", None, None)              -> Failed to load the model
+        ("db_error", None, None)                   -> Failed to synchronize with the database
+        ("ok", model_class_names, class_names)     -> Success
+    """
+    model = load_model(model_path)
+    if model is None:
+        return "invalid_model", None, None
+
+    model_class_names = get_model_class_names(model)
+    class_names = sync_model_classes_to_db(model_class_names, classes_txt_path)
+    if class_names is None:
+        return "db_error", None, None
+
+    return "ok", model_class_names, class_names
+
+def auto_create_labels(model, image_files, label_dir, visualized_dir, conf_thres=0.5, imgsz=640):
+    """
+    Create first-pass labels with a pretrained model.
+
+    Important:
+    - These labels are only a draft.
+    - Manually delete wrong boxes and fix missing product boxes before training.
+    """
+    if model is None:
+        debug_warn("Model is not loaded. Auto-label step skipped.")
+        return
+
+    label_dir = Path(label_dir)
+    label_dir.mkdir(parents=True, exist_ok=True)
+
+    debug_info("Starting first-pass auto labeling.")
+    all_results = []
+
+    for img_path in image_files:
+        debug_info(f"Processing image: {img_path}")
+        img = cv2.imread(str(img_path))
+        if img is None:
+            debug_warn(f"Failed to read image: {img_path}")
+            continue
+
+        img_h, img_w = img.shape[:2]
+        yolo_boxes = []
+        cls_id = -1
+
+        results = model.predict(
+            source=img_path,
+            conf=conf_thres,
+            imgsz=imgsz,
+            agnostic_nms=True,
+            verbose=False,
+        )
+        debug_info("Model inference completed.")
+        
+        img_boxes = []
+        for r_idx, result in enumerate(results):
+            if not hasattr(result, "boxes") or result.boxes is None:
+                debug_warn(f"No boxes found in result index {r_idx}")
+                continue
+
+            debug_info(f"Processing result index {r_idx}, boxes: {len(result.boxes)}")
+            for b_idx, box in enumerate(result.boxes):
+                score = float(box.conf[0].item())
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+
+                x1 = max(0, min(img_w - 1, int(round(x1))))
+                y1 = max(0, min(img_h - 1, int(round(y1))))
+                x2 = max(0, min(img_w - 1, int(round(x2))))
+                y2 = max(0, min(img_h - 1, int(round(y2))))
+
+                debug_item(f"Box {b_idx}: ({x1}, {y1}, {x2}, {y2}) conf={score:.4f}")
+                if score > conf_thres:
+                    cls_id = int(box.cls[0])
+                    img_boxes.append((x1, y1, x2, y2))
+                    yolo_boxes.append(xyxy_to_yolo(x1, y1, x2, y2, img_w, img_h))
+                else: continue
+
+        save_boxed_image(str(visualized_dir / f"{img_path.stem}_draft_boxed{img_path.suffix}"), img_path, img_boxes)
+        debug_info(f"Total boxes detected: {len(yolo_boxes)}")
+
+        all_results.append({
+            "image_path": img_path,
+            "class_id": cls_id,
+            "yolo_boxes": yolo_boxes, 
+            "boxes": img_boxes
+        })
+    return all_results
+
+def save_boxed_image(save_path, image_path, boxes):
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    image = cv2.imread(str(image_path))
+    for x1, y1, x2, y2 in boxes:
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+    cv2.imwrite(str(save_path), image)
+
+def auto_label_images(image_dir, auto_label_model_path):
+    try:
+        image_files = load_imgs(image_dir)
+        auto_label_model = load_model(auto_label_model_path)
+        
+        results = auto_create_labels(
             model=auto_label_model,
             image_files=image_files,
             label_dir=DRAFT_LABEL_DIR,
             visualized_dir=DRAFT_VIS_DIR,
-            conf=0.05,
+            conf_thres=0.05,
             imgsz=IMGSZ,
         )
+
         debug_warn("Review draft labels before training.")
         debug_warn(f"Edit labels in: {DRAFT_LABEL_DIR}")
         debug_warn(f"Check draft boxes in: {DRAFT_VIS_DIR}")
-
-    if REVIEW_LABELS: 
-        open_gui(image_files=image_files, label_dir=DRAFT_LABEL_DIR,)
-
-    """
-    if PREPARE_DATASET:
-        split_dataset(
-            image_files=image_files,
-            draft_label_dir=DRAFT_LABEL_DIR,
-            dataset_dir=DATASET_DIR,
-            val_ratio=0.2,
-        )
-
-        if AUGMENT_DATASET:
-            augment_train_dataset(DATASET_DIR, copies_per_image=3)
-
-        data_yaml = write_data_yaml(DATASET_DIR, class_name=CLASS_NAME)
-    else:
-        data_yaml = DATASET_DIR / "data.yaml"
-        debug_warn("PREPARE_DATASET=False. Dataset split/augmentation was not started.")
-
-    if TRAIN_MODEL:
-        train_detection_model(
-            data_yaml=data_yaml,
-            pretrained_model=PRETRAINED_MODEL,
-            project_dir=RUNS_DIR,
-            model_name=MODEL_NAME,
-            epochs=EPOCHS,
-            imgsz=IMGSZ,
-            batch=BATCH,
-        )
-    else:
-        debug_warn("TRAIN_MODEL=False. Training was not started.")
-        debug_warn("After reviewing labels, set PREPARE_DATASET=True and TRAIN_MODEL=True if you want to train.")
-"""
-
-if __name__ == "__main__":
-    build_hanging_product_model()
+        return results
+    except Exception as e:
+        debug_warn(f"Auto Label Error: {e}")
+        return False
+    
