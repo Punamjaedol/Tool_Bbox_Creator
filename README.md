@@ -4,34 +4,29 @@ Bounding box labeling tool for object detection dataset creation and management.
 
 ## Overview
 
-- Manual bounding box annotation with an interactive GUI
-- Automatic labeling using Ultralytics YOLO models
-- Bounding box and class management with a MariaDB database
-- Support for loading image folders or individual images
-- Automatic synchronization of model classes with the class database
-- Export and import in YOLO label format
-- Designed for efficient object detection dataset creation
+- Manual Annotation: Intuitive GUI for creating, editing, and deleting bounding boxes.
+- Auto-Labeling: Automatic inference and labeling using integrated Ultralytics YOLO models.
+- Database Integration: Reliable storage and management of classes and annotations via MariaDB.
+- Flexible Workflow: Supports loading individual images or entire image folders.
+- Smart Synchronization: Automatic synchronization of YOLO model classes with the database.
+- Standardized Export: Full support for importing and exporting data in the YOLO label format.
 
 ## Features
 
-- Manual bounding box creation, editing, and deletion
-- Auto labeling for all images using a YOLO `.pt` model
-- Image list and bounding box management
-- Class selection and management
-- Automatic synchronization between YOLO model classes and the database
-- Draft label generation and visualization
-- Database-based storage of classes and annotations
+- Automated Workflow: One-click "Auto Label All" function to generate draft annotations.
+- Data Management: Centralized management of image lists, bounding boxes, and object classes.
+- Model Compatibility: Seamless integration with custom YOLO .pt models.
+- Robust Persistence: All annotation data and class information are securely stored in a MariaDB database.
 
 ## Project Structure
 
-- `main.py`: application entry point
-- `auto_bbox_gui.py`: main GUI application
-- `auto_bbox_mode.py`: auto-labeling and image processing logic
-- `auto_bbox_db.py`: database CRUD functions
-- `ui_theme.py`: dark UI theme configuration
-- `config.py`: project configuration
-- `workspace/`: generated labels, visualization images, and temporary files
-- `best.pt`: default auto-label model
+- `main.py`: Application entry point.
+- `auto_bbox_gui.py`: Main GUI application logic.
+- `auto_bbox_mode.py`: Auto-labeling engine and image processing pipeline.
+- `auto_bbox_db.py`: Database CRUD operations and management.
+- `ui_theme.py`: Custom dark theme configuration for UI consistency.
+- `config.py`: Global project configurations and settings.
+- `workspace/`: Directory for exported labels, visualization outputs, and temporary data.
 
 ## Database
 
@@ -72,15 +67,14 @@ python main.py
 
 Typical workflow:
 
-1. Open an image folder.
-2. Select or change the auto-label YOLO model.
-3. Run **Auto Label All Images** (optional).
-4. Review and edit bounding boxes.
-5. Save annotations to the database and YOLO label files.
+1. Launch: Execute the application by running python main.py.
+2. Setup: Open the directory containing your target images.
+3. Configure (Optional): Select a custom YOLO .pt model for inference, or proceed with the default model to initiate auto-labeling.
+4. Annotate: Generate initial labels using **Auto Label All Images**, or manually create, refine, and edit bounding boxes at any time.
+5. Sync & Export: Save your final annotations to the MariaDB database and export them to standard YOLO text files.
 
 ## Notes
 
-- Only valid YOLO `.pt` model files can be selected for auto labeling.
-- When a new model is loaded, any classes not already in the database are automatically added.
-- Bounding boxes are stored in both the database and YOLO text format.
-- The application uses a dark-themed interface optimized for annotation work.
+- Only valid YOLO `.pt` model files can be selected for auto labeling engine.
+- Loading a new model will automatically trigger a synchronization process, adding any new classes found in the model to the database.
+-The application ensures data consistency by maintaining information in both the database and local YOLO label files.

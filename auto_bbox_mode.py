@@ -10,6 +10,33 @@ from auto_bbox_utils import *
 import auto_bbox_db as db
 from config import *
 
+
+# --- connect DB ---
+def connect_db(host, user, password, port, dbname):
+    """주어진 정보로 DB 연결을 시도하고, 성공/실패와 무관하게 정보를 저장한다."""
+    return db.try_connect(host, user, password, port, dbname, save=True)
+
+def disconnect_db():
+    db.disconnect()
+
+def is_db_connected():
+    return db.is_connected()
+
+def get_db_config():
+    return db.get_db_config()
+
+def get_table_name(table_name):
+    table_dic = {"class_table": db.CLASS_TABLE,
+                "bbox_table": db.BBOX_TABLE}
+    return table_dic[table_name]
+
+def set_table_name(table_name, updated_name):
+    """DB 모듈의 전역 변수 값을 직접 업데이트합니다."""
+    if table_name == "class_table":
+        db.CLASS_TABLE = updated_name
+    elif table_name == "bbox_table":
+        db.BBOX_TABLE = updated_name
+
 def load_imgs(input_dir, ):
     """Load source images that match the target conveyor screenshot pattern."""
     input_path = Path(input_dir)
@@ -180,12 +207,23 @@ def load_class_names(classes_txt_path):
     classes_txt_path = Path(classes_txt_path)
     if not classes_txt_path.exists():
         debug_warn(f"Classes file not found: {classes_txt_path}")
-        return []
+        debug_info("Trying to populate it from the active class source (DB or local_classes.json).")
+        return sync_classes_from_db(classes_txt_path) or []
     return [
         line.strip()
         for line in classes_txt_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+def init_local_classes(classes_txt_path):
+    """
+    Returns:
+      ("db_connected", None)   -> DB 연결 상태에서는 사용 불가
+      ("ok", class_names)      -> 초기화 완료 (빈 리스트)
+    """
+    if db.is_connected():
+        return "db_connected", None
+    db.reset_local_classes()
+    return "ok", sync_classes_from_db(classes_txt_path)
 
 def save_class_names(classes_txt_path, class_names):
     classes_txt_path = Path(classes_txt_path)

@@ -1,4 +1,6 @@
-import os, sys, ssl
+import os, sys, ssl, json
+from pathlib import Path
+
 
 # Windows 환경에서 파이썬 ssl 모듈이 Windows Root Certificate Store(인증서 저장소)에서
 # 깨진 인증서를 로드하려고 할 때 ssl.SSLError(NOT_ENOUGH_DATA)가 발생하는 버그를 우회합니다.
@@ -32,11 +34,43 @@ except ImportError:
 
 # localhost 사용 시 로컬 소켓/네임드파이프로 접근하려다 생기는 연결 실패를 막기 위해
 # 명시적으로 127.0.0.1을 지정하여 TCP/IP 연결을 강제합니다.
+_SETTINGS_PATH = Path(__file__).resolve().parent / "db_settings.json"
+
 DB_HOST = "127.0.0.1"
 DB_USER = "root"
 DB_PASSWORD = "root"
 DB_PORT = 3306
 DB_NAME = "yolobasedDB"
+
+def _load_saved_settings():
+    """이전에 GUI에서 저장해둔 접속정보가 있으면 기본값 위에 덮어씌운다."""
+    global DB_HOST, DB_USER, DB_PASSWORD, DB_PORT, DB_NAME
+    if not _SETTINGS_PATH.exists():
+        return
+    try:
+        data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+        DB_HOST = data.get("host", DB_HOST)
+        DB_USER = data.get("user", DB_USER)
+        DB_PASSWORD = data.get("password", DB_PASSWORD)
+        DB_PORT = int(data.get("port", DB_PORT))
+        DB_NAME = data.get("dbname", DB_NAME)
+    except Exception as e:
+        print(f"[DB][SETTINGS] Failed to load saved settings: {e}")
+
+_load_saved_settings()
+
+def get_db_config():
+    return {"host": DB_HOST, "user": DB_USER, "password": DB_PASSWORD, "port": DB_PORT, "dbname": DB_NAME}
+
+def set_db_config(host, user, password, port, dbname, save=True):
+    """GUI의 DB Connect 창에서 입력한 값으로 접속정보를 교체."""
+    global DB_HOST, DB_USER, DB_PASSWORD, DB_PORT, DB_NAME
+    DB_HOST, DB_USER, DB_PASSWORD, DB_PORT, DB_NAME = host, user, password, int(port), dbname
+    if save:
+        try:
+            _SETTINGS_PATH.write_text(json.dumps(get_db_config(), ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[DB][SETTINGS] Failed to save settings: {e}")
 
 def get_connection():
     """
@@ -49,7 +83,9 @@ def get_connection():
             password=DB_PASSWORD,
             port=int(DB_PORT),
             database=DB_NAME,
-            charset='utf8mb4'
+            charset='utf8mb4',
+            connect_timeout=5,
+
         )
     else:
         return mariadb.connect(
@@ -57,8 +93,17 @@ def get_connection():
             user=DB_USER,
             password=DB_PASSWORD,
             port=int(DB_PORT),
-            database=DB_NAME
+            database=DB_NAME,
+            connect_timeout=5,
+
         )
+def test_connection():
+    """연결 시도 후 바로 닫고 성공 여부만 반환."""
+    conn = connect()
+    if conn:
+        close_connection(conn)
+        return True
+    return False
 
 def connect():
     """

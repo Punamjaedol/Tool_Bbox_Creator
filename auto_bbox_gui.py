@@ -39,6 +39,8 @@ class BBoxReviewApp:
         self.max_canvas_w = max_canvas_w
         self.max_canvas_h = max_canvas_h
 
+        self.db_connected = False
+
         self.image_idx = 0
         self.image_path = None
         self.original_img = None
@@ -52,7 +54,7 @@ class BBoxReviewApp:
         self.original_box = None
         self.box_classes = []
         self.loaded_box_classes = []
-        self.class_names = self.load_class_names()
+        self.class_names = mode.sync_classes_from_db(self.CLASSES_TXT) or []
         self.selected_class_var = tk.StringVar()
         self.class_listbox = None
         self.image_dir_var = tk.StringVar(value=self.get_current_image_dir())
@@ -64,7 +66,7 @@ class BBoxReviewApp:
 
         self.root.title("BBOX Creator")
         width = 1400
-        height = 800
+        height = 650
         self.root.geometry(
             f"{width}x{height}+"
             f"{self.root.winfo_screenwidth() // 2 - width // 2}+"
@@ -83,10 +85,17 @@ class BBoxReviewApp:
         top.pack(side=tk.TOP, fill=tk.X)
 
         self.status_var = tk.StringVar()
-        ttk.Button(top, text="Prev", command=self.prev_image).pack(side=tk.LEFT, padx=3, pady=3)
-        ttk.Button(top, text="Next", command=self.next_image).pack(side=tk.LEFT, padx=3, pady=3)
-        ttk.Button(top, text="Save", command=self.save_current_labels).pack(side=tk.LEFT, padx=3, pady=3)
         ttk.Label(top, textvariable=self.status_var, anchor="w").pack(side=tk.LEFT, padx=12)
+
+        self.db_status_var = tk.StringVar()
+        ttk.Label(top, textvariable=self.db_status_var, anchor="w").pack(side=tk.LEFT, padx=12)
+        self.btn_connect = ttk.Button(top, text="DB Connect", command=self.open_db_connect_dialog)
+        self.btn_connect.pack(side=tk.LEFT, padx=3, pady=3)
+        self.btn_set_table = ttk.Button(top, text="Set DB Table", command=self.open_db_table_manager, state=tk.DISABLED)
+        self.btn_set_table.pack(side=tk.LEFT, padx=3, pady=3)
+        self.btn_disconnect = ttk.Button(top, text="Disconnect", command=self.disconnect_db_gui, state=tk.DISABLED)
+        self.btn_disconnect.pack(side=tk.LEFT, padx=3, pady=3)
+        self.update_db_status()
 
         # BODY
         body = tk.PanedWindow(self.root, bg=BG, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=6, showhandle=True)
@@ -102,6 +111,17 @@ class BBoxReviewApp:
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         body.add(self.canvas_frame, minsize=400, stretch="always")
 
+        frame_controls = ttk.Frame(self.canvas_frame, style="Background.TFrame")
+        frame_controls.pack(side=tk.BOTTOM, fill=tk.X, pady=0)
+        self.status_bar = ttk.Label(frame_controls, text="", anchor="center", relief="flat", style="Background.TLabel")
+        self.status_bar.pack(fill=tk.X)
+        button_inner = ttk.Frame(frame_controls, style="Background.TFrame")
+        button_inner.pack(anchor=tk.CENTER)
+
+        ttk.Button(button_inner, text="Prev", command=self.prev_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_inner, text="Save", command=self.save_current_labels).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_inner, text="Next", command=self.next_image).pack(side=tk.LEFT, padx=5)
+        
         side = ttk.Frame(body, width=360)
         body.add(side, minsize=280, stretch="never")
 
@@ -173,8 +193,9 @@ class BBoxReviewApp:
         class_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
         button_frame = ttk.Frame(class_frame)
-        button_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)       
+        button_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)        
         ttk.Button(button_frame, text="Class Manage", command=self.open_class_manager).pack(side=tk.RIGHT, anchor=tk.E, padx=4, pady=(0, 6,))
+        ttk.Button(button_frame, text="Initialize Local Class", command=self.init_local_class).pack(side=tk.RIGHT, anchor=tk.E, padx=4, pady=(0, 6,))
         self.refresh_image_list()
         self.refresh_class_list()
 
@@ -203,7 +224,7 @@ class BBoxReviewApp:
         self.root.bind("<F5>", lambda event: self.refresh_all())
         self.root.bind("<Left>", lambda event: self.prev_image())
         self.root.bind("<Right>", lambda event: self.next_image())
-    # 
+    
     def refresh_all(self):
         """Refresh the image list, box list, and class list."""
         self.refresh_image_list()
@@ -388,6 +409,12 @@ class BBoxReviewApp:
         self.canvas.yview_moveto(max(0, min(1, (next_canvas_y - event.y) / max(1, show_h - view_h))))
         self.draw_pointer_guides(event.x, event.y)
 
+    def show_status_message(self, message, duration=1000):
+        """상태 표시줄에 메시지를 띄우고 duration 뒤에 초기화합니다."""
+        self.status_bar.config(text=message)
+        # duration 이후에 텍스트를 "Ready"로 되돌림
+        self.root.after(duration, lambda: self.status_bar.config(text=""))
+
     # Lists / selection state
     def refresh_image_list(self):
         self.image_listbox.delete(0, tk.END)
@@ -425,6 +452,7 @@ class BBoxReviewApp:
         self.class_listbox.delete(0, tk.END)
         for class_name in self.class_names:
             self.class_listbox.insert(tk.END, class_name)
+        
 
     def select_listbox_index(self, listbox, idx):
         listbox.selection_clear(0, tk.END)
@@ -469,6 +497,29 @@ class BBoxReviewApp:
         )
 
     # Class names / selection
+    def init_local_class(self):
+        if mode.is_db_connected():
+            messagebox.showwarning("Initialize Local Class", "This action is only available when DB is not connected.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Initialize Local Class",
+            "This will delete all locally saved classes (local_classes.json).\nContinue?"
+        )
+        if not confirm:
+            return
+
+        status, class_names = mode.init_local_classes(self.CLASSES_TXT)
+        if status == "db_connected":
+            messagebox.showwarning("Initialize Local Class", "This action is only available when DB is not connected.")
+            return
+
+        self.class_names = class_names
+        self.refresh_class_list()
+        self.refresh_box_list()
+        self.draw_boxes()
+        messagebox.showinfo("Initialize Local Class", "Local classes have been reset.")
+        
     def load_class_names(self):
         return mode.load_class_names(self.CLASSES_TXT)
 
@@ -629,25 +680,6 @@ class BBoxReviewApp:
         self.refresh_class_list()
 
     # DB class management
-    def find_db_class(self, class_name, use_yn=None):
-        
-        where = "CLASS_NAME = %s"
-        params = [class_name]
-        if use_yn is not None:
-            where += " AND USE_YN = %s"
-            params.append(use_yn)
-        rows = select(
-            self.CLASS_TABLE,
-            columns="CLASS_ID, CLASS_NAME, USE_YN",
-            where=where,
-            params=tuple(params),
-            extra="ORDER BY CLASS_ID LIMIT 1",
-        )
-        
-        if not rows:
-            return None
-        return rows[0]
-
     def add_db_class(self, class_name):
         status, class_names = mode.add_class(class_name, self.CLASSES_TXT)
         if status == "exists":
@@ -686,7 +718,6 @@ class BBoxReviewApp:
     def open_class_manager(self):
         self.refresh_classes_from_text()
         dialog = tk.Toplevel(self.root)
-
 
         dialog.title("Class Manage")
         dialog.transient(self.root)
@@ -769,6 +800,121 @@ class BBoxReviewApp:
         debug_warn(f"Class not found in DB: {class_name}")
         return self.class_id_from_name(class_name)
 
+    def update_db_status(self):
+        if mode.is_db_connected():
+            cfg = mode.get_db_config()
+            self.db_status_var.set(f"DB: Connected ({cfg['host']}:{cfg['port']}/{cfg['dbname']})")
+            self.db_connected = True
+            self.btn_disconnect.config(state=tk.NORMAL)
+            self.btn_set_table.config(state=tk.NORMAL)
+        else:
+            self.db_status_var.set("DB: Not Connected (local only)")
+            self.db_connected = False
+            self.btn_disconnect.config(state=tk.DISABLED)
+            self.btn_set_table.config(state=tk.DISABLED)
+
+    def open_db_connect_dialog(self):
+        cfg = mode.get_db_config()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("DB Connect")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry(
+            f"320x280+{self.root.winfo_x() + self.root.winfo_width()//2 - 160}+"
+            f"{self.root.winfo_y() + self.root.winfo_height()//2 - 115}"
+        )
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        host_var = tk.StringVar(value=cfg["host"])
+        user_var = tk.StringVar(value=cfg["user"])
+        password_var = tk.StringVar(value=cfg["password"])
+        port_var = tk.StringVar(value=str(cfg["port"]))
+        dbname_var = tk.StringVar(value=cfg["dbname"])
+
+        fields = [
+            ("Host", host_var, {}),
+            ("User", user_var, {}),
+            ("Password", password_var, {"show": "*"}),
+            ("Port", port_var, {}),
+            ("DB Name", dbname_var, {}),
+        ]
+        for label_text, var, opts in fields:
+            row = ttk.Frame(dialog)
+            row.pack(side=tk.TOP, fill=tk.X, padx=10, pady=4)
+            ttk.Label(row, text=label_text, width=10, anchor="w").pack(side=tk.LEFT)
+            ttk.Entry(row, textvariable=var, **opts).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def try_connect():
+            try:
+                port = int(port_var.get().strip())
+            except ValueError:
+                messagebox.showerror("DB Connect", "Port must be a number.")
+                return
+
+            ok = mode.connect_db(
+                host_var.get().strip(), user_var.get().strip(),
+                password_var.get(), port, dbname_var.get().strip(),
+            )
+            if not ok:
+                messagebox.showerror("DB Connect", "Failed to connect to the database.\nCheck the connection info and try again.")
+                return
+            else:
+                messagebox.showinfo("DB Connect", "Successfully connected to the database!")
+
+            self.update_db_status()
+            self.sync_class_text_from_db()
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(button_frame, text="Connect", command=try_connect).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        dialog.focus_set()
+        dialog.lift()
+    
+    def disconnect_db_gui(self):
+        mode.disconnect_db()
+        self.db_status_var.set("DB: Not Connected (local only)")
+        self.btn_connect.config(state=tk.NORMAL)
+        self.btn_set_table.config(state=tk.DISABLED)
+        self.btn_disconnect.config(state=tk.DISABLED)
+
+        self.class_names = mode.sync_classes_from_db(self.CLASSES_TXT) or []
+        self.refresh_box_list()
+        self.refresh_class_list()
+
+        self.root.focus_set()
+        messagebox.showinfo("DB Disconnect", "Disconnected from DB. Now using Local mode.")
+
+    def open_db_table_manager(self):
+        if not mode.is_db_connected():
+            return
+            
+        win = tk.Toplevel(self.root)
+        win.title("Set DB Tables")
+        win.geometry(f"400x200+{self.root.winfo_x() + self.root.winfo_width()//2 - 200}+{self.root.winfo_y() + self.root.winfo_height()//2 - 100}")
+        
+        # 테이블명 입력 필드
+        ttk.Label(win, text="Class Info Table Name:").pack(pady=(10, 0))
+        self.entry_class_table = ttk.Entry(win)
+        self.entry_class_table.insert(0, mode.get_table_name('class_table')) # 기존값 불러오기
+        self.entry_class_table.pack(fill="x", padx=20)
+        
+        ttk.Label(win, text="BBox Data Table Name:").pack(pady=(10, 0))
+        self.entry_bbox_table = ttk.Entry(win)
+        self.entry_bbox_table.insert(0, mode.get_table_name('bbox_table')) # 기존값 불러오기
+        self.entry_bbox_table.pack(fill="x", padx=20)
+        
+        # 저장 버튼
+        def save_table_names():
+            mode.set_table_name("class_table", self.entry_class_table.get())
+            mode.set_table_name("bbox_table", self.entry_bbox_table.get())
+            messagebox.showinfo("Success", "Table names updated.")
+            win.destroy()
+            
+        ttk.Button(win, text="Save", command=save_table_names).pack(pady=20)
+        
     # Box drawing / coordinates
     def on_canvas_motion(self, event):
         self.draw_pointer_guides(event.x, event.y)
@@ -992,7 +1138,9 @@ class BBoxReviewApp:
         self.save_current_bboxes_to_db(self.image_path, class_name, boxes)
         self.save_boxed_image(str(self.VISUALIZED_DIR / f"{self.image_path.stem}_draft_boxed{self.image_path.suffix}"), self.image_path, boxes)
         self.refresh_image_list()
-        self.root.update_idletasks()    
+        self.root.update_idletasks()
+
+        self.show_status_message("Saved successfully!", duration=500)
 
     def save_boxed_image(self, save_path, image_path, boxes):        
         mode.save_boxed_image(save_path, image_path, boxes)

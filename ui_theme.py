@@ -61,7 +61,9 @@ def apply(root):
     set_all_frame_bg(root)
     
     style = ttk.Style(root)
-
+    style.configure("Background.TFrame", background=BG)
+    style.configure("Background.TLabel", background=BG, foreground=TEXT, font=FONT)
+    
     # -------------------------------------------------
     # TButton - Modern flat design
     # -------------------------------------------------
